@@ -11,6 +11,7 @@ import logging
 import logging.config
 import multiprocessing as mp
 import os
+import stat
 import random
 import re
 import shutil
@@ -931,9 +932,14 @@ class rules_updater:
     def __init__(self):
         self.url = "https://github.com/wagga40/Zircolite-Rules/archive/refs/heads/main.zip"
         self.logger = logging.getLogger(__name__)
-        self.temp_file = f'tmp-rules-{self.rand_string()}.zip'
-        self.tmp_dir = f'tmp-rules-{self.rand_string()}'
-        self.updated_rulesets = []
+        self.temp_file = Path(f'tmp-rules-{self.rand_string()}.zip')
+        self.tmp_dir = Path(f'tmp-rules-{self.rand_string()}')
+        # self.updated_rulesets = [] # TODO: remove this if it's unused
+        self.rules_dir = Path("rules")
+        if not self.rules_dir.exists():
+            self.rules_dir.mkdir()
+        elif not self.rules_dir.is_dir():
+            quit_on_error(f"Expected a directory named `./rules` (Found: {stat.filemode(self.rules_dir.stat().st_mode)})")
 
     def rand_string(self, length=4):
         return ''.join(random.SystemRandom().choice(string.ascii_uppercase + string.digits) for _ in range(length))
@@ -941,36 +947,41 @@ class rules_updater:
     def download(self):
         resp = requests.get(self.url, stream=True)
         total = int(resp.headers.get('content-length', 0))
-        with open(self.temp_file, 'wb') as file, tqdm(desc=self.temp_file, total=total, unit='iB', unit_scale=True, unit_divisor=1024, colour="yellow") as bar:
+        with self.temp_file.open('wb') as file, tqdm(desc=self.temp_file.name, total=total, unit='iB', unit_scale=True, unit_divisor=1024, colour="yellow") as bar:
             for data in resp.iter_content(chunk_size=1024):
                 size = file.write(data)
                 bar.update(size)
     
     def unzip(self):
-        shutil.unpack_archive(self.temp_file, self.tmp_dir, "zip")
+        shutil.unpack_archive(self.temp_file.absolute(), self.tmp_dir.absolute(), "zip")
     
     def check_if_newer_and_move(self):
-        count = 0
-        rulesets = Path(self.tmp_dir).rglob("*.json")
-        for ruleset in rulesets:
-            hash_new = hashlib.md5(open(ruleset,'rb').read()).hexdigest()
-            if Path(f'rules/{ruleset.name}').is_file():
-                hash_old = hashlib.md5(open(f'rules/{ruleset.name}','rb').read()).hexdigest()
-            else: 
-                hash_old = ""
-            if hash_new != hash_old:
-                count += 1
-                if not Path('rules/').exists():
-                    Path('rules/').mkdir()
-                shutil.move(ruleset, f'rules/{ruleset.name}')
-                self.updated_rulesets.append(f'rules/{ruleset.name}')
-                self.logger.info(f"{Fore.CYAN}   [+] Updated : rules/{ruleset.name}{Fore.RESET}")
-        if count == 0: 
+        has_new_files = False
+        rulesets = self.tmp_dir.rglob("*.json")
+
+        for new_file in rulesets:
+            hash_new = hashlib.md5(new_file.open("rb").read()).hexdigest()
+            old_file = self.rules_dir / new_file.name
+            hash_old = None
+            if old_file.is_file():
+                hash_old = hashlib.md5(old_file.open("rb").read()).hexdigest()
+            if hash_old and hash_old == hash_new:
+                # Skipping already existing rule
+                continue
+
+            # Replace the outdated ruleset by the new one
+            new_file.rename(old_file)
+            # self.updated_rulesets.append(old_file) # TODO: remove this if it's unused
+            self.logger.info(f"{Fore.CYAN}   [+] Updated : rules/{new_file.name}{Fore.RESET}")
+            has_new_files = True
+        if not has_new_files: 
             self.logger.info(f"{Fore.CYAN}   [+] No newer rulesets found")
     
     def clean(self):
-        os.remove(self.temp_file)
+        # Remove the temp file, skip if the file does not exists
+        self.temp_file.unlink(missing_ok=True)
         shutil.rmtree(self.tmp_dir)
+        
     
     def run(self):
         try: 
